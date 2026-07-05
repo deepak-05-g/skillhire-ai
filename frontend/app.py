@@ -59,6 +59,7 @@ PARSE_ENDPOINT = f"{BACKEND_URL}/api/v1/resume/parse"
 PARSE_TEXT_ENDPOINT = f"{BACKEND_URL}/api/v1/resume/parse-text"
 FETCH_JOBS_ENDPOINT = f"{BACKEND_URL}/api/v1/jobs/fetch"
 STORED_JOBS_ENDPOINT = f"{BACKEND_URL}/api/v1/jobs/stored"
+SEED_JOBS_ENDPOINT = f"{BACKEND_URL}/api/v1/jobs/seed"
 RECOMMEND_ENDPOINT = f"{BACKEND_URL}/api/v1/recommend/jobs"
 RECOMMEND_STORED_ENDPOINT = f"{BACKEND_URL}/api/v1/recommend/stored-jobs"
 OFFICIAL_SEARCH_ENDPOINT = f"{BACKEND_URL}/api/v1/jobs/official-search"
@@ -1182,6 +1183,24 @@ def fetch_stored_jobs(limit: int = 500) -> List[Dict[str, Any]]:
     return []
 
 
+def seed_job_database(max_companies_per_source: int = 4) -> Dict[str, Any]:
+    """Auto-populate the live database from all supported job board families."""
+    payload = {
+        "sources": ["greenhouse", "lever", "ashby"],
+        "max_companies_per_source": max_companies_per_source,
+    }
+    response = requests.post(SEED_JOBS_ENDPOINT, json=payload, timeout=180)
+    if response.status_code == 200:
+        return response.json()
+
+    try:
+        detail = response.json().get("detail", response.text)
+    except Exception:
+        detail = response.text
+    st.error(f"Automatic job fetch failed ({response.status_code}): {detail}")
+    return {"jobs": [], "count": 0, "sources": [], "errors": []}
+
+
 def get_stored_recommendations(
     resume_text: str,
     resume_skills: List[str],
@@ -1384,10 +1403,28 @@ def match_resume_against_database(
     use_ml: bool,
     job_limit: int,
 ) -> Tuple[List[Dict[str, Any]], int]:
-    """Load stored jobs and rank them against the parsed resume."""
+    """Ensure jobs exist, then rank them against the parsed resume."""
     jobs = fetch_stored_jobs(limit=job_limit)
+    if not jobs:
+        st.info("No stored roles yet. Fetching roles from Greenhouse, Lever, and Ashby automatically...")
+        seed_result = seed_job_database(max_companies_per_source=4)
+        jobs = seed_result.get("jobs", [])[:job_limit]
+        fetched_count = sum(
+            int(item.get("fetched", 0) or 0)
+            for item in seed_result.get("sources", [])
+        )
+        if jobs:
+            st.success(f"Loaded {len(jobs)} stored roles from {fetched_count} live job-board results.")
+        elif seed_result.get("errors"):
+            st.warning("Live job boards did not return stored roles yet. Try again or use Quick Tools with a company handle.")
+
     if jobs:
         st.session_state["jobs_db"] = jobs
+    else:
+        st.session_state["jobs_db"] = []
+        st.session_state.pop("recommendations", None)
+        st.session_state["last_jobs_analyzed"] = 0
+        return [], 0
 
     recommendations, jobs_analyzed = get_stored_recommendations(
         resume_text=parsed_resume.get("raw_text", ""),
@@ -3414,7 +3451,7 @@ with tab_main:
 
         mode_label = "ML Classifier" if use_ml else "Heuristic"
         if st.button(
-            f"Analyze resume and match roles ({mode_label})",
+            f"Analyze resume, fetch roles, and match ({mode_label})",
             type="primary",
             use_container_width=True,
         ):
@@ -3454,7 +3491,8 @@ with tab_main:
                     else:
                         st.warning(
                             "Resume parsed, but no database recommendations came back. "
-                            "Add roles from a company board below, then try again."
+                            "The automatic role fetch did not find usable listings yet. "
+                            "Try again or use Quick Tools with a company handle."
                         )
 
         parsed_resume = st.session_state.get("parsed_resume")
@@ -3560,7 +3598,7 @@ with tab_main:
         elif parsed_data:
             st.markdown('<p class="section-header">Parsed Resume Profile</p>', unsafe_allow_html=True)
             display_parsed_resume(parsed_data)
-            st.info("No role matches yet. Re-run matching or add more roles.")
+            st.info("No role matches yet. Re-run matching to auto-fetch roles, or add a specific company from Quick Tools.")
         else:
             st.info("Paste a resume or upload a PDF to generate ranked roles from the database.")
 

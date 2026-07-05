@@ -18,6 +18,12 @@ router = APIRouter(
     tags=["Jobs"]
 )
 
+DEFAULT_SEED_TARGETS: Dict[str, List[str]] = {
+    "greenhouse": ["stripe", "reddit", "cloudflare", "github"],
+    "lever": ["vercel", "figma", "netflix", "lever"],
+    "ashby": ["linear", "clerk", "replicate", "duolingo"],
+}
+
 
 class OfficialSearchRequest(BaseModel):
     resume_text: str = Field(..., description="Parsed resume text")
@@ -62,6 +68,26 @@ class SaveJobResponse(BaseModel):
 class StoredJobsResponse(BaseModel):
     jobs: List[Dict[str, Any]]
     count: int
+
+
+class SeedJobsRequest(BaseModel):
+    sources: Optional[List[str]] = Field(
+        default=None,
+        description="Optional source subset. Defaults to Greenhouse, Lever, and Ashby.",
+    )
+    max_companies_per_source: int = Field(
+        default=4,
+        ge=1,
+        le=10,
+        description="How many known company boards to try per source.",
+    )
+
+
+class SeedJobsResponse(BaseModel):
+    jobs: List[Dict[str, Any]]
+    count: int
+    sources: List[Dict[str, Any]]
+    errors: List[Dict[str, str]]
 
 
 @router.get("/stored", response_model=StoredJobsResponse, status_code=status.HTTP_200_OK)
@@ -113,6 +139,69 @@ def fetch_jobs_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An unexpected error occurred during job fetching: {str(e)}"
         )
+
+
+@router.post("/seed", response_model=SeedJobsResponse, status_code=status.HTTP_200_OK)
+def seed_jobs_endpoint(
+    request: Optional[SeedJobsRequest] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Populate an empty job database from a curated set of public company boards.
+
+    This supports the first-run UX: the frontend can parse a resume and request
+    matching without making the user manually fetch roles first.
+    """
+    request = request or SeedJobsRequest()
+    selected_sources = [
+        source.lower().strip()
+        for source in (request.sources or list(DEFAULT_SEED_TARGETS.keys()))
+        if source.strip()
+    ]
+    invalid_sources = [
+        source
+        for source in selected_sources
+        if source not in DEFAULT_SEED_TARGETS
+    ]
+    if invalid_sources:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported seed source(s): {', '.join(invalid_sources)}",
+        )
+
+    source_results: List[Dict[str, Any]] = []
+    errors: List[Dict[str, str]] = []
+
+    for source in selected_sources:
+        companies = DEFAULT_SEED_TARGETS[source][:request.max_companies_per_source]
+        for company in companies:
+            try:
+                jobs = fetch_jobs(source, company)
+                saved_jobs = save_jobs_batch(db, jobs) if jobs else []
+                source_results.append(
+                    {
+                        "source": source,
+                        "company": company,
+                        "fetched": len(jobs),
+                        "saved": len(saved_jobs),
+                    }
+                )
+            except Exception as exc:
+                errors.append(
+                    {
+                        "source": source,
+                        "company": company,
+                        "error": str(exc),
+                    }
+                )
+
+    jobs = list_jobs(db, limit=1000)
+    return {
+        "jobs": jobs,
+        "count": len(jobs),
+        "sources": source_results,
+        "errors": errors,
+    }
 
 
 @router.post(

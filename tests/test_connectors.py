@@ -136,3 +136,37 @@ def test_fetch_jobs_invalid_source():
     response = client.get("/api/v1/jobs/fetch?source=invalidboard&company=stripe")
     assert response.status_code == 400
     assert "Invalid source" in response.json()["detail"]
+
+
+@patch("app.routers.jobs.fetch_jobs")
+def test_seed_jobs_endpoint(mock_fetch):
+    """POST /jobs/seed should fetch curated boards and persist returned jobs."""
+    mock_fetch.return_value = [
+        {
+            "source": "Greenhouse",
+            "company": "Stripe",
+            "title": "Software Engineer",
+            "location": "Remote",
+            "description": "Build APIs and internal tools.",
+            "requirements": "Python, SQL, Docker",
+            "apply_url": "https://example.com/jobs/seeded-stripe",
+            "job_type": "Full-time",
+        }
+    ]
+
+    response = client.post(
+        "/api/v1/jobs/seed",
+        json={"sources": ["greenhouse"], "max_companies_per_source": 1},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["count"] == 1
+    assert data["jobs"][0]["title"] == "Software Engineer"
+    assert data["sources"][0]["source"] == "greenhouse"
+    assert data["sources"][0]["company"] == "stripe"
+    assert data["sources"][0]["fetched"] == 1
+
+    stored_response = client.get("/api/v1/jobs/stored")
+    assert stored_response.status_code == 200
+    assert stored_response.json()["count"] == 1
