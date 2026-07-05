@@ -1,0 +1,32 @@
+[
+  {
+    "source": "Greenhouse",
+    "company": "Cognitive Scale",
+    "title": "Junior Machine Learning Engineer",
+    "location": "San Francisco, CA (Hybrid)",
+    "description": "We are looking for a Junior Machine Learning Engineer to help design, build, and deploy NLP models that solve real-world problems. You will work closely with senior engineers to implement semantic search, text classification, and recommendation engines.",
+    "requirements": "Proficient in Python, scikit-learn, spaCy, SQL, Git, REST APIs, and FastAPI. Understanding of NLP and machine learning basics.",
+    "apply_url": "https://boards.greenhouse.io/cognitivescale/jobs/101",
+    "job_type": "Full-time"
+  },
+  {
+    "source": "Lever",
+    "company": "Fintechflow",
+    "title": "Full Stack Developer Intern (Python/React)",
+    "location": "New York, NY (Remote)",
+    "description": "FintechFlow is building the next generation of automated financial systems. We need a Full Stack Developer Intern experienced in backend REST APIs built with FastAPI/Flask and frontend responsive layouts with React or Next.js. You will manage SQLite databases for staging and PostgreSQL for production.",
+    "requirements": "Python, FastAPI, React, JavaScript, TypeScript, SQLAlchemy, PostgreSQL, and Docker. Currently enrolled in a BS/MS program in Computer Science.",
+    "apply_url": "https://jobs.lever.co/fintechflow/202",
+    "job_type": "Internship"
+  },
+  {
+    "source": "Ashby",
+    "company": "Synthetix AI",
+    "title": "AI Product Engineer",
+    "location": "Austin, TX (On-site)",
+    "description": "Synthetix AI is pioneering multimodal agents. As an AI Product Engineer, you will build user interfaces in Streamlit and React, parse customer documentation PDFs, extract skills and requirements, and run local model experiments.",
+    "requirements": "Python, Streamlit, sentence-transformers, PyMuPDF, Docker, NLP, and Machine Learning. 2+ years of experience building AI applications.",
+    "apply_url": "https://jobs.ashbyhq.com/synthetix/303",
+    "job_type": "Full-time"
+  }
+]

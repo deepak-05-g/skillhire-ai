@@ -1,0 +1,80 @@
+# render.yaml — Render Blueprints specification for SkillHire AI
+# Deploy with: https://render.com/deploy
+# Docs: https://render.com/docs/blueprint-spec
+#
+# This file defines two web services:
+#   1. skillhire-backend  — FastAPI (Python) on port 8000
+#   2. skillhire-frontend — Streamlit (Python) on port 8501
+#
+# The backend URL is automatically injected into the frontend via the
+# BACKEND_URL environment variable, enabling zero-config cross-service calls.
+
+services:
+  # --------------------------------------------------------------------------
+  # FastAPI Backend
+  # --------------------------------------------------------------------------
+  - type: web
+    name: skillhire-backend
+    runtime: python
+    region: singapore   # change to: oregon / frankfurt / ohio as needed
+    plan: free          # upgrade to starter/standard for production
+    rootDir: backend
+
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+      python -m spacy download en_core_web_sm || true
+
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+    envVars:
+      - key: API_STR
+        value: /api/v1
+      - key: ALLOWED_ORIGINS
+        value: "*"
+      - key: DATABASE_URL
+        value: sqlite:////data/skillhire_ai.db   # uses persistent disk below
+      - key: PYTHON_VERSION
+        value: "3.10.14"
+
+    disk:
+      name: skillhire-data
+      mountPath: /data
+      sizeGB: 1        # stores SQLite DB + model pkl
+
+    healthCheckPath: /health
+    autoDeploy: true
+
+  # --------------------------------------------------------------------------
+  # Streamlit Frontend
+  # --------------------------------------------------------------------------
+  - type: web
+    name: skillhire-frontend
+    runtime: python
+    region: singapore   # must match backend region for low latency
+    plan: free
+    rootDir: frontend
+
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+
+    startCommand: >
+      streamlit run app.py
+      --server.port 10000
+      --server.address 0.0.0.0
+      --server.headless true
+      --browser.gatherUsageStats false
+
+    envVars:
+      - key: BACKEND_URL
+        fromService:
+          name: skillhire-backend
+          type: web
+          property: host
+          # Renders as https://skillhire-backend.onrender.com
+      - key: PYTHON_VERSION
+        value: "3.10.14"
+
+    healthCheckPath: /
+    autoDeploy: true

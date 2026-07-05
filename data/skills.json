@@ -1,0 +1,9 @@
+{
+  "Programming": ["Python", "Java", "C", "C++", "JavaScript", "TypeScript"],
+  "Frontend": ["HTML", "CSS", "React", "Next.js", "Tailwind CSS"],
+  "Backend": ["Node.js", "Express.js", "FastAPI", "Django", "Flask"],
+  "Database": ["SQL", "MySQL", "PostgreSQL", "MongoDB"],
+  "ML/Data": ["Machine Learning", "Deep Learning", "NLP", "Pandas", "NumPy", "Scikit-learn", "TensorFlow", "PyTorch", "Matplotlib", "Seaborn"],
+  "Cloud/DevOps": ["Git", "GitHub", "Docker", "AWS", "Azure", "Google Cloud", "Linux", "REST API"],
+  "CS": ["DSA", "OOP", "DBMS", "Operating Systems", "Computer Networks"]
+}
