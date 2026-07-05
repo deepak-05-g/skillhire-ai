@@ -1122,16 +1122,19 @@ def _plot_score_distribution(scores: List[int]) -> plt.Figure:
 # SECTION: Backend & API calls
 # ============================================================================
 
-def check_backend() -> Tuple[bool, str]:
+def check_backend(timeout: int = 8, attempts: int = 1) -> Tuple[bool, str]:
     """Return (is_online, status_message)."""
-    try:
-        response = requests.get(f"{BACKEND_URL}/health", timeout=2)
-        if response.status_code == 200:
-            version = response.json().get("version", "unknown")
-            return True, f"Backend connected (v{version})"
-        return False, f"Backend returned status {response.status_code}"
-    except requests.RequestException:
-        return False, f"Backend not reachable at {BACKEND_URL}"
+    last_message = f"Backend not reachable at {BACKEND_URL}"
+    for _ in range(max(attempts, 1)):
+        try:
+            response = requests.get(f"{BACKEND_URL}/health", timeout=timeout)
+            if response.status_code == 200:
+                version = response.json().get("version", "unknown")
+                return True, f"Backend connected (v{version})"
+            last_message = f"Backend returned status {response.status_code}"
+        except requests.RequestException as exc:
+            last_message = f"Backend not reachable at {BACKEND_URL}: {exc}"
+    return False, last_message
 
 
 def parse_resume(uploaded_file) -> Optional[Dict[str, Any]]:
@@ -3335,8 +3338,8 @@ with kpi_col4:
 
 if not backend_online:
     st.warning(
-        "Start the FastAPI backend before parsing resumes or fetching live jobs. "
-        "You can still review the interface while it is offline."
+        "The backend is not responding yet. On Render free tier it may be waking up; "
+        "click Analyze to retry, or open the backend health URL once."
     )
 
 st.write("")
@@ -3455,8 +3458,17 @@ with tab_main:
             type="primary",
             use_container_width=True,
         ):
-            if not backend_online:
-                st.error("Backend is offline. Start the FastAPI server, then try again.")
+            live_backend_online = backend_online
+            if not live_backend_online:
+                with st.spinner("Waking the backend service..."):
+                    live_backend_online, backend_msg = check_backend(timeout=25, attempts=2)
+
+            if not live_backend_online:
+                st.error(
+                    "Backend is still not reachable. Open the backend /health URL once, "
+                    "wait for it to wake up, then try again."
+                )
+                st.caption(backend_msg)
             else:
                 parsed = None
                 with st.spinner("Parsing resume..."):
