@@ -1,23 +1,15 @@
-# render.yaml — Render Blueprints specification for SkillHire AI
-# Deploy with: https://render.com/deploy
-# Docs: https://render.com/docs/blueprint-spec
-#
-# This file defines two web services:
-#   1. skillhire-backend  — FastAPI (Python) on port 8000
-#   2. skillhire-frontend — Streamlit (Python) on port 8501
-#
-# The backend URL is automatically injected into the frontend via the
-# BACKEND_URL environment variable, enabling zero-config cross-service calls.
+# Render Blueprint for SkillHire AI.
+# Creates:
+#   1. skillhire-backend  - FastAPI API
+#   2. skillhire-frontend - Streamlit UI
+#   3. skillhire-db       - Render Postgres database
 
 services:
-  # --------------------------------------------------------------------------
-  # FastAPI Backend
-  # --------------------------------------------------------------------------
   - type: web
     name: skillhire-backend
     runtime: python
-    region: singapore   # change to: oregon / frankfurt / ohio as needed
-    plan: free          # upgrade to starter/standard for production
+    region: singapore
+    plan: free
     rootDir: backend
 
     buildCommand: |
@@ -25,7 +17,7 @@ services:
       pip install -r requirements.txt
       python -m spacy download en_core_web_sm || true
 
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
 
     envVars:
       - key: API_STR
@@ -33,25 +25,18 @@ services:
       - key: ALLOWED_ORIGINS
         value: "*"
       - key: DATABASE_URL
-        value: sqlite:////data/skillhire_ai.db   # uses persistent disk below
+        fromDatabase:
+          name: skillhire-db
+          property: connectionString
       - key: PYTHON_VERSION
         value: "3.10.14"
 
-    disk:
-      name: skillhire-data
-      mountPath: /data
-      sizeGB: 1        # stores SQLite DB + model pkl
-
     healthCheckPath: /health
-    autoDeploy: true
 
-  # --------------------------------------------------------------------------
-  # Streamlit Frontend
-  # --------------------------------------------------------------------------
   - type: web
     name: skillhire-frontend
     runtime: python
-    region: singapore   # must match backend region for low latency
+    region: singapore
     plan: free
     rootDir: frontend
 
@@ -61,7 +46,7 @@ services:
 
     startCommand: >
       streamlit run app.py
-      --server.port 10000
+      --server.port $PORT
       --server.address 0.0.0.0
       --server.headless true
       --browser.gatherUsageStats false
@@ -71,10 +56,26 @@ services:
         fromService:
           name: skillhire-backend
           type: web
-          property: host
-          # Renders as https://skillhire-backend.onrender.com
+          envVarKey: RENDER_EXTERNAL_URL
+      - key: AUTH_BACKEND_URL
+        fromService:
+          name: skillhire-backend
+          type: web
+          envVarKey: RENDER_EXTERNAL_URL
+      - key: FRONTEND_URL
+        fromService:
+          name: skillhire-frontend
+          type: web
+          envVarKey: RENDER_EXTERNAL_URL
       - key: PYTHON_VERSION
         value: "3.10.14"
 
     healthCheckPath: /
-    autoDeploy: true
+
+databases:
+  - name: skillhire-db
+    region: singapore
+    plan: free
+    databaseName: skillhire_ai
+    user: skillhire
+    postgresMajorVersion: "16"
