@@ -2,6 +2,14 @@
 
 SkillHire AI is an intelligent, resume-based job recommendation system that simplifies the job search process. By simply uploading a resume, users receive highly personalized, ranked job matches tailored to their specific skills and experience.
 
+## Live Render URLs
+
+- Frontend app: https://skillhire-frontend.onrender.com
+- Backend API docs: https://skillhire-backend.onrender.com/docs
+- Backend health check: https://skillhire-backend.onrender.com/health
+
+Render free-tier services may take a minute to wake up after inactivity.
+
 ## 🎯 Problem Statement
 
 The modern job search is broken. Candidates spend hours sifting through thousands of irrelevant job postings, manually parsing requirements, and second-guessing if their skills align with the role. SkillHire AI solves this by inverting the process: **bring your resume, and let the AI find the jobs that fit you.**
@@ -19,7 +27,7 @@ The modern job search is broken. Candidates spend hours sifting through thousand
 - **Frontend**: Streamlit, Pandas, Matplotlib, Requests
 - **Backend**: Python, FastAPI, PostgreSQL/SQLite, SQLAlchemy, Uvicorn
 - **Machine Learning & NLP**: Scikit-learn, Sentence-Transformers (all-MiniLM-L6-v2), PyMuPDF (fitz)
-- **Deployment**: Docker, Docker Compose
+- **Deployment**: Docker, Docker Compose, Render
 
 ## 🏗️ Architecture Diagram
 

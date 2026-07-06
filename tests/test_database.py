@@ -150,6 +150,23 @@ def test_recommend_stored_jobs_endpoint(mock_semantic):
         db.close()
 
 
+def test_recommend_stored_jobs_uses_sample_dataset_when_empty():
+    """POST /recommend/stored-jobs should use bundled jobs when the DB is empty."""
+    payload = {
+        "resume_text": SAMPLE_RESUME_TEXT,
+        "resume_skills": ["Python", "FastAPI", "SQL", "Git"],
+        "job_limit": 10,
+        "use_ml": False,
+    }
+    response = client.post("/api/v1/recommend/stored-jobs", json=payload)
+    assert response.status_code == 200
+
+    data = response.json()
+    assert data["jobs_analyzed"] >= 1
+    assert data["recommendations"]
+    assert data["jobs"]
+
+
 @patch("app.services.matcher._semantic_similarity", return_value=0.75)
 def test_recommend_history_endpoint(mock_semantic):
     """GET /recommend/history should return saved recommendation records."""

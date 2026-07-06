@@ -6,8 +6,8 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.services.matcher import rank_jobs
 from app.services.storage import (
+    ensure_job_inventory,
     get_recommendation_history,
-    list_jobs,
     save_recommendation_results,
 )
 
@@ -85,6 +85,7 @@ class RecommendResponse(BaseModel):
 class RecommendStoredJobsResponse(BaseModel):
     recommendations: List[dict]
     jobs_analyzed: int
+    jobs: List[dict] = Field(default_factory=list)
 
 
 class HistoryResponse(BaseModel):
@@ -153,11 +154,11 @@ def recommend_stored_jobs_endpoint(
             detail="resume_text cannot be empty.",
         )
 
-    jobs_dicts = list_jobs(db, limit=request.job_limit)
+    jobs_dicts = ensure_job_inventory(db, limit=request.job_limit)
     if not jobs_dicts:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No stored jobs found. Fetch jobs or load sample data first.",
+            detail="No job data is available yet. Please try again in a moment.",
         )
 
     try:
@@ -179,6 +180,7 @@ def recommend_stored_jobs_endpoint(
         return {
             "recommendations": ranked_jobs,
             "jobs_analyzed": len(jobs_dicts),
+            "jobs": jobs_dicts,
         }
 
     except Exception as e:

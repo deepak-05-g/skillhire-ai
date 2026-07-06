@@ -94,7 +94,7 @@ def generate_fallback_response(request: ChatRequest) -> str:
         if request.resume_skills:
             skills = ", ".join(f"`{s}`" for s in request.resume_skills[:10])
             response += f"\nStrong keywords already present: {skills}.\n"
-        response += "\nNext step: run job matching, then ask which exact roles are strongest from your ranked results."
+        response += "\nNext step: click Analyze, then ask which exact roles are strongest from your ranked results."
 
     elif any(k in user_query for k in ["skill", "improve", "learn", "gap", "study", "roadmap"]):
         response += "### Skill Development Roadmap\n"
@@ -133,7 +133,7 @@ def generate_fallback_response(request: ChatRequest) -> str:
             response += "No ranked jobs are loaded yet. Based on your resume, begin with these searches:\n"
             for role in inferred_roles:
                 response += f"- {role}\n"
-            response += "\nThen load jobs and run matching so I can compare exact roles and skill gaps."
+            response += "\nAfter you click Analyze, I can compare exact roles and skill gaps automatically."
 
     elif any(k in user_query for k in ["resume", "tip", "profile", "cv", "portfolio"]):
         response += "### Resume Optimization Suggestions\n"
@@ -180,6 +180,9 @@ async def chat_endpoint(request: ChatRequest):
         )
 
     api_key = settings.GEMINI_API_KEY
+    if not settings.ENABLE_GEMINI_CHAT:
+        return ChatResponse(response=generate_fallback_response(request))
+
     if not api_key:
         return ChatResponse(response=generate_fallback_response(request))
 

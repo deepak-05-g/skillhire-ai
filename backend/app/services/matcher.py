@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Set
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+from app.config import settings
 from app.services.skill_extractor import extractor
 from app.services.fit_classifier import predict_fit_label
 
@@ -45,6 +46,11 @@ def _load_sentence_transformer():
     if _st_model is not None or _use_tfidf_fallback:
         return
 
+    if not settings.ENABLE_SENTENCE_TRANSFORMERS:
+        logger.info("SentenceTransformers disabled. Using TF-IDF semantic fallback.")
+        _use_tfidf_fallback = True
+        return
+
     try:
         from sentence_transformers import SentenceTransformer, util
 
@@ -61,19 +67,33 @@ def _load_sentence_transformer():
 
 def _semantic_similarity(resume_text: str, job_text: str) -> float:
     """Return semantic similarity in [0, 1] between resume and job text."""
+    scores = _semantic_similarity_batch(resume_text, [job_text])
+    return scores[0] if scores else 0.0
+
+
+def _semantic_similarity_batch(resume_text: str, job_texts: List[str]) -> List[float]:
+    """Return semantic similarity scores in [0, 1] for many job texts."""
+    if not job_texts:
+        return []
+
     _load_sentence_transformer()
 
     if _st_model is not None and _st_util is not None:
         resume_emb = _st_model.encode(resume_text, convert_to_tensor=True)
-        job_emb = _st_model.encode(job_text, convert_to_tensor=True)
-        cosine_sim = float(_st_util.cos_sim(resume_emb, job_emb)[0][0])
-        return max(0.0, min(1.0, cosine_sim))
+        job_embs = _st_model.encode(job_texts, convert_to_tensor=True)
+        cosine_scores = _st_util.cos_sim(resume_emb, job_embs)[0]
+        return [max(0.0, min(1.0, float(score))) for score in cosine_scores]
 
     # TF-IDF + cosine similarity fallback
     vectorizer = TfidfVectorizer(stop_words="english")
-    matrix = vectorizer.fit_transform([resume_text, job_text])
-    sim = cosine_similarity(matrix[0:1], matrix[1:2])[0][0]
-    return max(0.0, min(1.0, float(sim)))
+    documents = [resume_text or ""] + [job_text or "" for job_text in job_texts]
+    try:
+        matrix = vectorizer.fit_transform(documents)
+    except ValueError:
+        return [0.0 for _ in job_texts]
+
+    similarities = cosine_similarity(matrix[0:1], matrix[1:]).flatten()
+    return [max(0.0, min(1.0, float(score))) for score in similarities]
 
 
 def _build_job_text(job: Dict[str, Any]) -> str:
@@ -187,22 +207,21 @@ def rank_jobs(
         return []
 
     ranked_results: List[Dict[str, Any]] = []
+    job_texts = [_build_job_text(job) for job in jobs]
+    semantic_scores = _semantic_similarity_batch(resume_text, job_texts)
 
-    for job in jobs:
+    for job, job_text, semantic_similarity_score in zip(jobs, job_texts, semantic_scores):
         title = job.get("title", "Unknown Title")
         company = job.get("company", "Unknown Company")
         location = job.get("location", "Remote/Unknown")
         apply_url = job.get("apply_url", "#")
         source = job.get("source", "Unknown")
 
-        job_text = _build_job_text(job)
-
         job_skills = extractor.extract(job_text).get("skills", [])
         skill_match_score, matched_skills, missing_skills = _compute_skill_match(
             resume_skills, job_skills
         )
 
-        semantic_similarity_score = _semantic_similarity(resume_text, job_text)
         title_bonus = _compute_title_bonus(title, resume_text, projects_text)
 
         final_score = (
@@ -252,4 +271,3 @@ def rank_jobs(
 
     ranked_results.sort(key=lambda item: item["match_score"], reverse=True)
     return ranked_results
-

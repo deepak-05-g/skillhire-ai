@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.services.resume_parser import ResumeParsingError, parse_resume, parse_resume_text
 from app.services.skill_extractor import extractor
-from app.services.storage import save_parsed_resume
+from app.services.storage import get_or_create_resume
 
 router = APIRouter(
     prefix="/resume",
@@ -26,11 +26,11 @@ def _add_skills_and_save(
     skills_data = extractor.extract(parsed_data["raw_text"])
     parsed_data.update(skills_data)
 
-    save_parsed_resume(
+    get_or_create_resume(
         db=db,
-        filename=filename,
         raw_text=parsed_data["raw_text"],
         extracted_skills=skills_data.get("skills", []),
+        filename=filename,
     )
     return parsed_data
 

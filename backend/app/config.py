@@ -34,6 +34,8 @@ class Settings(BaseSettings):
 
     # AI Configuration
     GEMINI_API_KEY: Optional[str] = None
+    ENABLE_SENTENCE_TRANSFORMERS: bool = False
+    ENABLE_GEMINI_CHAT: bool = False
 
     # Firebase Google Sign-In Configuration
     FIREBASE_API_KEY: Optional[str] = None

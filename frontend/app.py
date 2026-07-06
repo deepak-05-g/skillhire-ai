@@ -5,6 +5,8 @@ SkillHire AI — Streamlit frontend for resume parsing, job fetching, and recomm
 from __future__ import annotations
 
 import base64
+import hashlib
+import html
 import json
 import os
 import re
@@ -1122,6 +1124,56 @@ def _plot_score_distribution(scores: List[int]) -> plt.Figure:
 # SECTION: Backend & API calls
 # ============================================================================
 
+def _response_detail(response: requests.Response) -> str:
+    """Extract a concise error detail from a backend response."""
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            detail = payload.get("detail")
+            if detail:
+                return str(detail)
+    except Exception:
+        pass
+    return response.text.strip()
+
+
+def _friendly_api_error(action: str, response: requests.Response) -> str:
+    """Turn HTTP failures into user-facing status text."""
+    if response.status_code in {502, 503, 504}:
+        return (
+            f"{action} could not finish because the backend is waking up or busy. "
+            "Please try again in a moment."
+        )
+
+    detail = _response_detail(response)
+    if detail:
+        return f"{action} could not finish: {detail}"
+    return f"{action} could not finish. Please try again."
+
+
+def _uploaded_file_signature(uploaded_file) -> Tuple[str, bytes]:
+    """Return a stable hash and bytes for the uploaded resume."""
+    file_bytes = uploaded_file.getvalue()
+    digest = hashlib.sha256(file_bytes).hexdigest()
+    return digest, file_bytes
+
+
+def get_or_parse_resume(uploaded_file) -> Tuple[Optional[Dict[str, Any]], bool]:
+    """Reuse the parsed resume when the same PDF is analyzed again."""
+    signature, file_bytes = _uploaded_file_signature(uploaded_file)
+    cached_signature = st.session_state.get("resume_file_signature")
+    cached_resume = st.session_state.get("parsed_resume")
+
+    if cached_resume and cached_signature == signature:
+        return cached_resume, True
+
+    parsed = parse_resume(uploaded_file, file_bytes=file_bytes)
+    if parsed:
+        st.session_state["resume_file_signature"] = signature
+        st.session_state["resume_file_name"] = uploaded_file.name
+    return parsed, False
+
+
 def check_backend(timeout: int = 8, attempts: int = 1) -> Tuple[bool, str]:
     """Return (is_online, status_message)."""
     last_message = f"Backend not reachable at {BACKEND_URL}"
@@ -1137,20 +1189,16 @@ def check_backend(timeout: int = 8, attempts: int = 1) -> Tuple[bool, str]:
     return False, last_message
 
 
-def parse_resume(uploaded_file) -> Optional[Dict[str, Any]]:
+def parse_resume(uploaded_file, file_bytes: Optional[bytes] = None) -> Optional[Dict[str, Any]]:
     """Parse resume PDF via backend."""
     files = {
-        "file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf"),
+        "file": (uploaded_file.name, file_bytes if file_bytes is not None else uploaded_file.getvalue(), "application/pdf"),
     }
     response = requests.post(PARSE_ENDPOINT, files=files, timeout=30)
     if response.status_code == 200:
         return response.json()
 
-    try:
-        detail = response.json().get("detail", response.text)
-    except Exception:
-        detail = response.text
-    st.error(f"Resume parsing failed ({response.status_code}): {detail}")
+    st.error(_friendly_api_error("Resume parsing", response))
     return None
 
 
@@ -1164,11 +1212,7 @@ def parse_pasted_resume(resume_text: str) -> Optional[Dict[str, Any]]:
     if response.status_code == 200:
         return response.json()
 
-    try:
-        detail = response.json().get("detail", response.text)
-    except Exception:
-        detail = response.text
-    st.error(f"Resume text parsing failed ({response.status_code}): {detail}")
+    st.error(_friendly_api_error("Resume text parsing", response))
     return None
 
 
@@ -1178,11 +1222,7 @@ def fetch_stored_jobs(limit: int = 500) -> List[Dict[str, Any]]:
     if response.status_code == 200:
         return response.json().get("jobs", [])
 
-    try:
-        detail = response.json().get("detail", response.text)
-    except Exception:
-        detail = response.text
-    st.error(f"Could not load stored jobs ({response.status_code}): {detail}")
+    st.error(_friendly_api_error("Stored jobs", response))
     return []
 
 
@@ -1196,11 +1236,7 @@ def seed_job_database(max_companies_per_source: int = 4) -> Dict[str, Any]:
     if response.status_code == 200:
         return response.json()
 
-    try:
-        detail = response.json().get("detail", response.text)
-    except Exception:
-        detail = response.text
-    st.error(f"Automatic job fetch failed ({response.status_code}): {detail}")
+    st.error(_friendly_api_error("Automatic job loading", response))
     return {"jobs": [], "count": 0, "sources": [], "errors": []}
 
 
@@ -1209,7 +1245,7 @@ def get_stored_recommendations(
     resume_skills: List[str],
     use_ml: bool = True,
     job_limit: int = 500,
-) -> Tuple[List[Dict[str, Any]], int]:
+) -> Tuple[List[Dict[str, Any]], int, List[Dict[str, Any]]]:
     """Rank database jobs against the parsed resume."""
     payload = {
         "resume_text": resume_text,
@@ -1220,14 +1256,14 @@ def get_stored_recommendations(
     response = requests.post(RECOMMEND_STORED_ENDPOINT, json=payload, timeout=120)
     if response.status_code == 200:
         data = response.json()
-        return data.get("recommendations", []), int(data.get("jobs_analyzed", 0) or 0)
+        return (
+            data.get("recommendations", []),
+            int(data.get("jobs_analyzed", 0) or 0),
+            data.get("jobs", []),
+        )
 
-    try:
-        detail = response.json().get("detail", response.text)
-    except Exception:
-        detail = response.text
-    st.error(f"Database recommendation failed ({response.status_code}): {detail}")
-    return [], 0
+    st.error(_friendly_api_error("Job matching", response))
+    return [], 0, []
 
 
 def fetch_jobs(source: str, company: str) -> List[Dict[str, Any]]:
@@ -1237,11 +1273,7 @@ def fetch_jobs(source: str, company: str) -> List[Dict[str, Any]]:
     if response.status_code == 200:
         return response.json()
 
-    try:
-        detail = response.json().get("detail", response.text)
-    except Exception:
-        detail = response.text
-    st.error(f"Job fetch failed ({response.status_code}): {detail}")
+    st.error(_friendly_api_error("Job fetch", response))
     return []
 
 
@@ -1263,11 +1295,7 @@ def get_recommendations(
         data = response.json()
         return data.get("recommendations", data)
 
-    try:
-        detail = response.json().get("detail", response.text)
-    except Exception:
-        detail = response.text
-    st.error(f"Recommendation failed ({response.status_code}): {detail}")
+    st.error(_friendly_api_error("Recommendation", response))
     return []
 
 
@@ -1289,11 +1317,7 @@ def get_official_searches(
         data = response.json()
         return data.get("official_search_sources", [])
 
-    try:
-        detail = response.json().get("detail", response.text)
-    except Exception:
-        detail = response.text
-    st.error(f"Official search links failed ({response.status_code}): {detail}")
+    st.error(_friendly_api_error("Official search links", response))
     return []
 
 
@@ -1311,11 +1335,7 @@ def save_job_bookmark(job: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if response.status_code in (200, 201):
         return response.json()
 
-    try:
-        detail = response.json().get("detail", response.text)
-    except Exception:
-        detail = response.text
-    st.error(f"Could not save job ({response.status_code}): {detail}")
+    st.error(_friendly_api_error("Saving this job", response))
     return None
 
 
@@ -1406,35 +1426,14 @@ def match_resume_against_database(
     use_ml: bool,
     job_limit: int,
 ) -> Tuple[List[Dict[str, Any]], int]:
-    """Ensure jobs exist, then rank them against the parsed resume."""
-    jobs = fetch_stored_jobs(limit=job_limit)
-    if not jobs:
-        st.info("No stored roles yet. Fetching roles from Greenhouse, Lever, and Ashby automatically...")
-        seed_result = seed_job_database(max_companies_per_source=4)
-        jobs = seed_result.get("jobs", [])[:job_limit]
-        fetched_count = sum(
-            int(item.get("fetched", 0) or 0)
-            for item in seed_result.get("sources", [])
-        )
-        if jobs:
-            st.success(f"Loaded {len(jobs)} stored roles from {fetched_count} live job-board results.")
-        elif seed_result.get("errors"):
-            st.warning("Live job boards did not return stored roles yet. Try again or use Quick Tools with a company handle.")
-
-    if jobs:
-        st.session_state["jobs_db"] = jobs
-    else:
-        st.session_state["jobs_db"] = []
-        st.session_state.pop("recommendations", None)
-        st.session_state["last_jobs_analyzed"] = 0
-        return [], 0
-
-    recommendations, jobs_analyzed = get_stored_recommendations(
+    """Rank the resume against the automatic stored/sample job inventory."""
+    recommendations, jobs_analyzed, jobs = get_stored_recommendations(
         resume_text=parsed_resume.get("raw_text", ""),
         resume_skills=parsed_resume.get("skills", []),
         use_ml=use_ml,
         job_limit=job_limit,
     )
+    st.session_state["jobs_db"] = jobs
     if recommendations:
         st.session_state["recommendations"] = recommendations
         st.session_state["last_jobs_analyzed"] = jobs_analyzed
@@ -1456,6 +1455,111 @@ def get_top_missing_skills(
     return [skill for skill, _ in missing_counter.most_common(limit)]
 
 
+def infer_role_suggestions_from_skills(skills: List[str]) -> List[str]:
+    """Suggest likely role directions from extracted resume skills."""
+    skills_lower = {skill.lower() for skill in skills}
+    roles: List[str] = []
+
+    if {"python", "fastapi", "sql", "postgresql"} & skills_lower:
+        roles.append("Backend Engineer")
+    if {"react", "javascript", "typescript", "html", "css"} & skills_lower:
+        roles.append("Frontend or Full Stack Developer")
+    if {"machine learning", "nlp", "scikit-learn", "pandas", "numpy"} & skills_lower:
+        roles.append("Machine Learning Intern")
+    if {"docker", "aws", "azure", "google cloud", "kubernetes"} & skills_lower:
+        roles.append("Cloud/DevOps Intern")
+
+    return roles[:3] or ["Software Engineer Intern", "Backend Developer", "Full Stack Developer"]
+
+
+def build_advisor_shortcut_response(
+    action: str,
+    parsed_resume: Dict[str, Any],
+    recommendations: List[Dict[str, Any]],
+) -> str:
+    """Build a short, direct response for chatbot shortcut buttons."""
+    skills = parsed_resume.get("skills", []) if parsed_resume else []
+    missing_skills = get_top_missing_skills(recommendations, limit=5)
+    top_jobs = recommendations[:3]
+
+    if action == "skill_gap":
+        if missing_skills:
+            gaps = ", ".join(missing_skills)
+            return (
+                f"Top skill gaps from your current matches: **{gaps}**. "
+                "Prioritize the first two, then add one project bullet showing where you used them."
+            )
+        if recommendations:
+            return "Your top matches do not show major repeated gaps. Focus on stronger project metrics and clearer role keywords."
+        return "Upload a resume and click Analyze first; then I can calculate skill gaps from your matched jobs."
+
+    if action == "resume_tips":
+        if not parsed_resume:
+            return "Upload a resume and click Analyze first; then I can give targeted resume tips."
+        tips = []
+        if len(skills) < 8:
+            tips.append("make your technical skills easier to scan")
+        if not parsed_resume.get("sections", {}).get("projects", "").strip():
+            tips.append("add a Projects section with 2-3 measurable bullets")
+        if not LINK_PATTERN.search(parsed_resume.get("raw_text", "")):
+            tips.append("add GitHub, portfolio, or live demo links")
+        if not tips:
+            tips.append("tailor your summary and top project bullets to the strongest matched role")
+        return "Resume tips: " + "; ".join(tips[:3]) + "."
+
+    if action == "job_suggestions":
+        if top_jobs:
+            lines = [
+                f"**{job.get('title', 'Role')}** at **{job.get('company', 'Company')}** ({job.get('match_score', 0)}%)"
+                for job in top_jobs
+            ]
+            return "Best current matches:\n\n" + "\n".join(f"- {line}" for line in lines)
+        roles = ", ".join(infer_role_suggestions_from_skills(skills))
+        return f"Suggested role directions: **{roles}**. Click Analyze to rank specific jobs automatically."
+
+    roles = ", ".join(infer_role_suggestions_from_skills(skills))
+    if skills:
+        return (
+            f"Career direction: target **{roles}** based on your current skills. "
+            "Use the top matches and skill gaps below to choose which resume bullets to tailor first."
+        )
+    return "Upload a resume and click Analyze; I will connect your skills, job matches, gaps, and resume tips in one view."
+
+
+def append_advisor_shortcut(action: str, label: str) -> None:
+    """Append a shortcut question and direct answer into chat history."""
+    parsed_resume = st.session_state.get("parsed_resume", {})
+    recommendations = st.session_state.get("recommendations", [])
+    prompt_map = {
+        "skill_gap": "Skill Gap",
+        "career_advisor": "Career Advisor",
+        "resume_tips": "Resume Tips",
+        "job_suggestions": "Job Suggestions",
+    }
+    st.session_state.setdefault("chat_messages", [])
+    st.session_state["chat_messages"].append(
+        {"role": "user", "content": prompt_map.get(action, label)}
+    )
+    st.session_state["chat_messages"].append(
+        {
+            "role": "assistant",
+            "content": build_advisor_shortcut_response(action, parsed_resume, recommendations),
+        }
+    )
+
+
+def infer_advisor_action_from_prompt(prompt: str) -> str:
+    """Choose a local advisor shortcut for free-form fallback responses."""
+    prompt_lower = prompt.lower()
+    if any(term in prompt_lower for term in ["gap", "skill", "learn", "roadmap"]):
+        return "skill_gap"
+    if any(term in prompt_lower for term in ["resume", "cv", "tip", "profile"]):
+        return "resume_tips"
+    if any(term in prompt_lower for term in ["job", "role", "match", "suggest"]):
+        return "job_suggestions"
+    return "career_advisor"
+
+
 def display_career_chatbot(backend_online: bool) -> None:
     """Render the AI Career Advisor as part of the main resume workflow."""
     st.markdown(
@@ -1469,8 +1573,7 @@ def display_career_chatbot(backend_online: bool) -> None:
     )
 
     if not backend_online:
-        st.warning("Start the backend to chat with the Career Advisor.")
-        return
+        st.info("Quick advisor answers are available. Free-form AI chat will resume when the backend is online.")
 
     if "chat_messages" not in st.session_state:
         st.session_state["chat_messages"] = [
@@ -1488,6 +1591,20 @@ def display_career_chatbot(backend_online: bool) -> None:
     resume_skills = parsed_resume.get("skills", [])
     recommendations = st.session_state.get("recommendations", [])
     missing_skills = get_top_missing_skills(recommendations)
+
+    st.caption("Quick answers")
+    shortcut_cols = st.columns(4)
+    shortcuts = [
+        ("Skill Gap", "skill_gap"),
+        ("Career Advisor", "career_advisor"),
+        ("Resume Tips", "resume_tips"),
+        ("Job Suggestions", "job_suggestions"),
+    ]
+    for col, (label, action) in zip(shortcut_cols, shortcuts):
+        with col:
+            if st.button(label, key=f"advisor_shortcut_{action}", use_container_width=True):
+                append_advisor_shortcut(action, label)
+                st.rerun()
 
     career_goal = st.text_input(
         "Target role or career goal",
@@ -1536,14 +1653,22 @@ def display_career_chatbot(backend_online: bool) -> None:
 
         with st.chat_message("assistant"):
             with st.spinner("Career Advisor is preparing guidance..."):
-                ai_response = send_chat_message(
-                    messages=messages_history,
-                    resume_text=resume_text,
-                    resume_skills=resume_skills,
-                    missing_skills=missing_skills,
-                    job_recommendations=recommendations,
-                    career_goal=career_goal,
-                )
+                if backend_online:
+                    ai_response = send_chat_message(
+                        messages=messages_history,
+                        resume_text=resume_text,
+                        resume_skills=resume_skills,
+                        missing_skills=missing_skills,
+                        job_recommendations=recommendations,
+                        career_goal=career_goal,
+                    )
+                else:
+                    action = infer_advisor_action_from_prompt(prompt)
+                    ai_response = build_advisor_shortcut_response(
+                        action,
+                        parsed_resume,
+                        recommendations,
+                    )
                 if ai_response:
                     st.markdown(ai_response)
                     st.session_state["chat_messages"].append(
@@ -1798,7 +1923,7 @@ def display_skill_gap_summary(recommendations: List[Dict[str, Any]]) -> None:
     """Show most common missing skills from top 10 recommendations."""
     top_jobs = recommendations[:10]
     if not top_jobs:
-        st.info("No recommendations yet — run job matching first.")
+        st.info("No recommendations yet. Upload a resume and click Analyze first.")
         return
 
     missing_counter: Counter = Counter()
@@ -1900,7 +2025,7 @@ def display_job_market_insights(
 ) -> None:
     """Render Job Market Insights dashboard."""
     if not jobs:
-        st.info("Load or fetch jobs to see market insights.")
+        st.info("Analyze a resume to see market insights.")
         return
 
     insights = compute_market_insights(jobs, recommendations)
@@ -2337,9 +2462,22 @@ def display_saved_jobs_section(backend_online: bool) -> None:
 
 
 def render_chatbot_launcher() -> None:
-    """Render a floating chatbot popover in the bottom-right corner."""
-    st.markdown(
-        """
+    """Render a floating chatbot popover with in-panel shortcut answers."""
+    parsed_resume = st.session_state.get("parsed_resume", {})
+    recommendations = st.session_state.get("recommendations", [])
+    responses = {
+        "skill_gap": build_advisor_shortcut_response("skill_gap", parsed_resume, recommendations),
+        "career_advisor": build_advisor_shortcut_response("career_advisor", parsed_resume, recommendations),
+        "resume_tips": build_advisor_shortcut_response("resume_tips", parsed_resume, recommendations),
+        "job_suggestions": build_advisor_shortcut_response("job_suggestions", parsed_resume, recommendations),
+    }
+
+    def response_to_html(text: str) -> str:
+        escaped = html.escape(text)
+        escaped = re.sub(r"\*\*(.*?)\*\*", r"<strong>\1</strong>", escaped)
+        return escaped.replace("\n\n", "<br><br>").replace("\n", "<br>")
+
+    launcher_html = """
         <style>
             .skillhire-chat-launcher-shell {
                 position: fixed;
@@ -2351,7 +2489,8 @@ def render_chatbot_launcher() -> None:
             .skillhire-chat-launcher-shell * {
                 box-sizing: border-box;
             }
-            .skillhire-chat-launcher-toggle {
+            .skillhire-chat-launcher-toggle,
+            .skillhire-chat-launcher-radio {
                 position: absolute;
                 opacity: 0;
                 pointer-events: none;
@@ -2365,7 +2504,7 @@ def render_chatbot_launcher() -> None:
             }
             .skillhire-chat-launcher-bubble-text,
             .skillhire-chat-launcher-panel {
-                background: rgba(255, 255, 255, 0.97);
+                background: rgba(255, 255, 255, 0.98);
                 border: 1px solid rgba(101, 146, 135, 0.22);
                 box-shadow: 0 14px 32px rgba(15, 23, 42, 0.16);
                 backdrop-filter: blur(14px);
@@ -2407,7 +2546,6 @@ def render_chatbot_launcher() -> None:
                 top: 13px;
                 left: 50%;
                 transform: translateX(-50%);
-                box-shadow: inset 0 -3px 0 rgba(255,255,255,0.1);
             }
             .skillhire-chat-launcher-icon::after {
                 content: "";
@@ -2430,15 +2568,14 @@ def render_chatbot_launcher() -> None:
                 bottom: 8px;
                 left: 50%;
                 transform: translateX(-50%);
-                box-shadow: 0 0 0 8px rgba(255,255,255,0.12);
             }
             .skillhire-chat-launcher-panel {
                 position: absolute;
                 right: 0;
                 bottom: 72px;
-                width: 320px;
+                width: 340px;
                 border-radius: 18px;
-                padding: 0.95rem 0.95rem 0.9rem 0.95rem;
+                padding: 0.95rem;
                 color: #0f172a;
                 opacity: 0;
                 transform: translateY(10px) scale(0.98);
@@ -2462,8 +2599,8 @@ def render_chatbot_launcher() -> None:
                 margin-bottom: 0.7rem;
             }
             .skillhire-chat-launcher-panel-chips {
-                display: flex;
-                flex-wrap: wrap;
+                display: grid;
+                grid-template-columns: 1fr 1fr;
                 gap: 0.45rem;
                 margin-bottom: 0.75rem;
             }
@@ -2471,29 +2608,49 @@ def render_chatbot_launcher() -> None:
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
-                padding: 0.42rem 0.65rem;
+                min-height: 34px;
+                padding: 0.42rem 0.55rem;
                 border-radius: 999px;
                 border: 1px solid #b1d3b9;
                 background: #e6f2dd;
                 color: #4f7f74;
-                font-size: 0.75rem;
+                font-size: 0.74rem;
                 font-weight: 700;
-                text-decoration: none;
-                white-space: nowrap;
+                cursor: pointer;
+                text-align: center;
             }
-            .skillhire-chat-launcher-panel-chip:hover {
-                background: #dcead2;
+            #advisor-skill-gap:checked ~ .skillhire-chat-launcher-panel-chips label[for="advisor-skill-gap"],
+            #advisor-career:checked ~ .skillhire-chat-launcher-panel-chips label[for="advisor-career"],
+            #advisor-resume:checked ~ .skillhire-chat-launcher-panel-chips label[for="advisor-resume"],
+            #advisor-jobs:checked ~ .skillhire-chat-launcher-panel-chips label[for="advisor-jobs"] {
+                background: #659287;
+                color: #ffffff;
+                border-color: #659287;
             }
-            .skillhire-chat-launcher-panel-actions {
-                display: flex;
-                gap: 0.55rem;
-                flex-wrap: wrap;
+            .skillhire-chat-launcher-response {
+                display: none;
+                border-radius: 12px;
+                background: #f8fafc;
+                border: 1px solid #e2e8f0;
+                padding: 0.75rem;
+                color: #334155;
+                font-size: 0.8rem;
+                line-height: 1.5;
+                min-height: 92px;
+                max-height: 180px;
+                overflow: auto;
             }
-            .skillhire-chat-launcher-panel-link,
+            #advisor-skill-gap:checked ~ .skillhire-chat-launcher-responses [data-response="skill_gap"],
+            #advisor-career:checked ~ .skillhire-chat-launcher-responses [data-response="career_advisor"],
+            #advisor-resume:checked ~ .skillhire-chat-launcher-responses [data-response="resume_tips"],
+            #advisor-jobs:checked ~ .skillhire-chat-launcher-responses [data-response="job_suggestions"] {
+                display: block;
+            }
             .skillhire-chat-launcher-panel-close {
                 border: 0;
                 border-radius: 999px;
-                padding: 0.55rem 0.85rem;
+                padding: 0.52rem 0.85rem;
+                margin-top: 0.7rem;
                 font-size: 0.8rem;
                 font-weight: 700;
                 cursor: pointer;
@@ -2501,12 +2658,6 @@ def render_chatbot_launcher() -> None:
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
-            }
-            .skillhire-chat-launcher-panel-link {
-                background: #659287;
-                color: #ffffff;
-            }
-            .skillhire-chat-launcher-panel-close {
                 background: #e6f2dd;
                 color: #4f7f74;
             }
@@ -2519,7 +2670,7 @@ def render_chatbot_launcher() -> None:
                     display: none;
                 }
                 .skillhire-chat-launcher-panel {
-                    width: min(88vw, 300px);
+                    width: min(88vw, 310px);
                     right: 0;
                 }
             }
@@ -2533,22 +2684,42 @@ def render_chatbot_launcher() -> None:
                 </div>
             </label>
             <div class="skillhire-chat-launcher-panel">
+                <input class="skillhire-chat-launcher-radio" id="advisor-skill-gap" name="skillhire-advisor-topic" type="radio" checked />
+                <input class="skillhire-chat-launcher-radio" id="advisor-career" name="skillhire-advisor-topic" type="radio" />
+                <input class="skillhire-chat-launcher-radio" id="advisor-resume" name="skillhire-advisor-topic" type="radio" />
+                <input class="skillhire-chat-launcher-radio" id="advisor-jobs" name="skillhire-advisor-topic" type="radio" />
                 <div class="skillhire-chat-launcher-panel-title">Career Advisor</div>
-                <div class="skillhire-chat-launcher-panel-copy">Ask me anything about jobs, skills, resume improvements, or what to learn next.</div>
+                <div class="skillhire-chat-launcher-panel-copy">Choose a quick topic for an immediate answer.</div>
                 <div class="skillhire-chat-launcher-panel-chips">
-                    <a class="skillhire-chat-launcher-panel-chip" href="#career-advisor-panel">Review my resume</a>
-                    <a class="skillhire-chat-launcher-panel-chip" href="#career-advisor-panel">Find better jobs</a>
-                    <a class="skillhire-chat-launcher-panel-chip" href="#career-advisor-panel">Skill gaps</a>
+                    <label class="skillhire-chat-launcher-panel-chip" for="advisor-skill-gap">Skill Gap</label>
+                    <label class="skillhire-chat-launcher-panel-chip" for="advisor-career">Career Advisor</label>
+                    <label class="skillhire-chat-launcher-panel-chip" for="advisor-resume">Resume Tips</label>
+                    <label class="skillhire-chat-launcher-panel-chip" for="advisor-jobs">Job Suggestions</label>
                 </div>
-                <div class="skillhire-chat-launcher-panel-actions">
-                    <a class="skillhire-chat-launcher-panel-link" href="#career-advisor-panel">Open advisor</a>
-                    <label class="skillhire-chat-launcher-panel-close" for="skillhire-chat-launcher-toggle">Close</label>
+                <div class="skillhire-chat-launcher-responses">
+                    <div class="skillhire-chat-launcher-response" data-response="skill_gap">__SKILL_GAP_RESPONSE__</div>
+                    <div class="skillhire-chat-launcher-response" data-response="career_advisor">__CAREER_RESPONSE__</div>
+                    <div class="skillhire-chat-launcher-response" data-response="resume_tips">__RESUME_RESPONSE__</div>
+                    <div class="skillhire-chat-launcher-response" data-response="job_suggestions">__JOBS_RESPONSE__</div>
                 </div>
+                <label class="skillhire-chat-launcher-panel-close" for="skillhire-chat-launcher-toggle">Close</label>
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
+
+    launcher_html = launcher_html.replace(
+        "__SKILL_GAP_RESPONSE__", response_to_html(responses["skill_gap"])
     )
+    launcher_html = launcher_html.replace(
+        "__CAREER_RESPONSE__", response_to_html(responses["career_advisor"])
+    )
+    launcher_html = launcher_html.replace(
+        "__RESUME_RESPONSE__", response_to_html(responses["resume_tips"])
+    )
+    launcher_html = launcher_html.replace(
+        "__JOBS_RESPONSE__", response_to_html(responses["job_suggestions"])
+    )
+    st.markdown(launcher_html, unsafe_allow_html=True)
 
 
 def render_auth_topbar() -> None:
@@ -2969,13 +3140,13 @@ def display_job_market_insights(
 ) -> None:
     """Render job market insights."""
     if not jobs:
-        st.info("Load or fetch jobs to see market insights.")
+        st.info("Analyze a resume to see market insights.")
         return
 
     insights = compute_market_insights(jobs, recommendations)
 
     st.markdown("### Job Market Insights")
-    st.caption("Demand signals from the roles currently available in your database.")
+    st.caption("Demand signals from the roles available for automatic matching.")
 
     m1, m2, m3 = st.columns(3)
     m1.metric("Jobs analyzed", insights["job_count"])
@@ -3161,7 +3332,7 @@ with st.sidebar:
                 <div class="workflow-step">
                     <div class="workflow-step__index">DATA</div>
                     <div class="workflow-step__title">{sidebar_jobs} jobs cached</div>
-                    <div class="workflow-step__copy">Rank stored roles or add more from a company career board.</div>
+                    <div class="workflow-step__copy">Cached roles are used automatically during analysis.</div>
                 </div>
                 <div class="workflow-step">
                     <div class="workflow-step__index">TRACKING</div>
@@ -3177,7 +3348,7 @@ with st.sidebar:
     st.markdown("### Search Controls")
     match_threshold = st.slider("Minimum match score (%)", 10, 100, 40, 5)
     max_recommendations = st.number_input("Max jobs to display", 1, 20, 5)
-    job_database_limit = st.number_input("Database jobs to scan", 50, 1000, 500, 50)
+    job_database_limit = st.number_input("Jobs to scan", 50, 1000, 500, 50)
     preferred_location = st.text_input(
         "Preferred location (optional)",
         placeholder="e.g. India, Remote, Seattle",
@@ -3198,9 +3369,9 @@ with st.sidebar:
         st.warning("Heuristic mode active")
 
     st.markdown("---")
-    st.markdown("### Quick Tools")
-    with st.expander("Add roles to database", expanded=False):
-        st.caption("Fetch roles from public company boards and include them in future matching.")
+    st.markdown("### Optional Data Refresh")
+    with st.expander("Refresh live role inventory", expanded=False):
+        st.caption("Optional: add fresh public-board roles. Analyze works automatically without this.")
         sidebar_job_source = st.radio(
             "Company board",
             [JOB_SOURCE_GREENHOUSE, JOB_SOURCE_LEVER, JOB_SOURCE_ASHBY],
@@ -3249,11 +3420,11 @@ with st.sidebar:
                     st.session_state["jobs_db"] = stored_jobs or jobs
                     st.success(f"Saved {len(jobs)} roles from {sidebar_board.title()}.")
                 else:
-                    st.warning("No roles returned for that company board.")
+                    st.warning("No fresh roles returned from that board right now.")
 
     st.markdown("---")
     st.caption(
-        "SkillHire AI matches your resume to jobs using skill overlap, "
+        "SkillHire AI analyzes your resume and matches jobs using skill overlap, "
         "semantic similarity, and role keywords."
     )
     st.caption("FastAPI | Streamlit | scikit-learn | Sentence-Transformers")
@@ -3283,7 +3454,7 @@ st.markdown(
         <div class="app-eyebrow">Career operations dashboard</div>
         <div class="app-title">Job Search Dashboard</div>
         <div class="hero-shell__meta">
-            Use a single workspace to parse your resume, search live company boards, rank stored jobs, and keep a shortlist of the strongest opportunities.
+            Use a single workspace to parse your resume, automatically rank roles, review skill gaps, and keep a shortlist of the strongest opportunities.
         </div>
     </div>
     """,
@@ -3319,7 +3490,7 @@ with kpi_col3:
         <div class="kpi-card kpi-card--neutral">
             <div class="kpi-card__label">Search inventory</div>
             <div class="kpi-card__value">{len(jobs_snapshot)}</div>
-            <div class="kpi-card__hint">Stored jobs available for ranking and filtering.</div>
+            <div class="kpi-card__hint">Jobs ready for automatic ranking and filtering.</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -3358,14 +3529,14 @@ with tab_main:
     main_col = st.container()
 
     if False:
-        st.markdown('<p class="section-header">Quick Tools</p>', unsafe_allow_html=True)
-        st.caption("Search controls, company boards, and utility actions.")
+        st.markdown('<p class="section-header">Optional Data Refresh</p>', unsafe_allow_html=True)
+        st.caption("Optional controls for enriching the automatic job inventory.")
 
         st.markdown("<div class='dashboard-panel'>", unsafe_allow_html=True)
         st.markdown("**Search Controls**")
         match_threshold = st.slider("Minimum match score (%)", 10, 100, 40, 5)
         max_recommendations = st.number_input("Max jobs to display", 1, 20, 5)
-        job_database_limit = st.number_input("Database jobs to scan", 50, 1000, 500, 50)
+        job_database_limit = st.number_input("Jobs to scan", 50, 1000, 500, 50)
         preferred_location = st.text_input(
             "Preferred location (optional)",
             placeholder="e.g. India, Remote, Seattle",
@@ -3388,7 +3559,7 @@ with tab_main:
         st.markdown("</div>", unsafe_allow_html=True)
 
         if False:
-            st.caption("Fetch roles from public company boards. New roles are saved for future matching.")
+            st.caption("Optionally refresh roles from public company boards.")
             job_source = st.radio(
                 "Company board",
                 [JOB_SOURCE_GREENHOUSE, JOB_SOURCE_LEVER, JOB_SOURCE_ASHBY],
@@ -3437,7 +3608,7 @@ with tab_main:
                         st.session_state["jobs_db"] = stored_jobs or jobs
                         st.success(f"Fetched and saved {len(jobs)} roles from {board.title()}.")
                     else:
-                        st.warning("No roles returned for that company board.")
+                        st.warning("No fresh roles returned from that board right now.")
 
         render_top_career_links_section(backend_online)
 
@@ -3454,75 +3625,85 @@ with tab_main:
 
         mode_label = "ML Classifier" if use_ml else "Heuristic"
         if st.button(
-            f"Analyze resume, fetch roles, and match ({mode_label})",
+            f"Analyze resume and match jobs ({mode_label})",
             type="primary",
             use_container_width=True,
         ):
-            live_backend_online = backend_online
-            if not live_backend_online:
-                with st.spinner("Waking the backend service..."):
+            if uploaded_file is None:
+                st.warning("Upload a PDF resume first.")
+            else:
+                progress = st.progress(0)
+                progress_note = st.empty()
+
+                progress_note.info("Step 1 of 4: Checking backend availability...")
+                live_backend_online = backend_online
+                if not live_backend_online:
                     live_backend_online, backend_msg = check_backend(timeout=25, attempts=2)
 
-            if not live_backend_online:
-                st.error(
-                    "Backend is still not reachable. Open the backend /health URL once, "
-                    "wait for it to wake up, then try again."
-                )
-                st.caption(backend_msg)
-            else:
-                parsed = None
-                with st.spinner("Parsing resume..."):
-                    if uploaded_file is None:
-                        st.warning("Upload a PDF resume first.")
-                    else:
-                        parsed = parse_resume(uploaded_file)
+                if not live_backend_online:
+                    progress.empty()
+                    progress_note.error(
+                        "The backend is still waking up. Wait a moment and click Analyze again."
+                    )
+                    st.caption(backend_msg)
+                else:
+                    progress.progress(25)
+                    progress_note.info("Step 2 of 4: Parsing resume...")
+                    parsed, used_cached_parse = get_or_parse_resume(uploaded_file)
 
-                if parsed:
-                    st.session_state["parsed_resume"] = parsed
-                    st.session_state.pop("recommendations", None)
+                    if parsed:
+                        st.session_state["parsed_resume"] = parsed
+                        st.session_state.pop("recommendations", None)
 
-                    with st.spinner("Ranking roles from the job database..."):
+                        progress.progress(55)
+                        if used_cached_parse:
+                            progress_note.info("Step 3 of 4: Reusing parsed resume and ranking jobs...")
+                        else:
+                            progress_note.info("Step 3 of 4: Ranking jobs automatically...")
+
                         recs, jobs_analyzed = match_resume_against_database(
                             parsed_resume=parsed,
                             use_ml=use_ml,
                             job_limit=int(job_database_limit),
                         )
 
-                    official = get_official_searches(
-                        resume_text=parsed.get("raw_text", ""),
-                        resume_skills=parsed.get("skills", []),
-                        location=preferred_location,
-                        include_amazon=include_amazon,
-                    )
-                    st.session_state["official_searches"] = official
+                        progress.progress(82)
+                        progress_note.info("Step 4 of 4: Preparing career search links...")
+                        official = get_official_searches(
+                            resume_text=parsed.get("raw_text", ""),
+                            resume_skills=parsed.get("skills", []),
+                            location=preferred_location,
+                            include_amazon=include_amazon,
+                        )
+                        st.session_state["official_searches"] = official
 
-                    if recs:
-                        st.success(
-                            f"Found {len(recs)} ranked matches from {jobs_analyzed} database jobs."
-                        )
-                    else:
-                        st.warning(
-                            "Resume parsed, but no database recommendations came back. "
-                            "The automatic role fetch did not find usable listings yet. "
-                            "Try again or use Quick Tools with a company handle."
-                        )
+                        progress.progress(100)
+                        if recs:
+                            progress_note.success(
+                                f"Analysis complete. Found {len(recs)} ranked matches from {jobs_analyzed} jobs."
+                            )
+                        else:
+                            progress_note.warning(
+                                "Resume parsed successfully, but no ranked matches are available yet. "
+                                "The app will keep using the bundled job dataset automatically."
+                            )
 
         parsed_resume = st.session_state.get("parsed_resume")
         if parsed_resume:
             skills = parsed_resume.get("skills", [])
             st.caption(f"Current resume: **{len(skills)} extracted skills**")
             if st.button("Re-run role matching", use_container_width=True):
-                with st.spinner("Re-ranking database roles..."):
+                with st.spinner("Re-ranking available roles..."):
                     recs, jobs_analyzed = match_resume_against_database(
                         parsed_resume=parsed_resume,
                         use_ml=use_ml,
                         job_limit=int(job_database_limit),
                     )
                 if recs:
-                    st.success(f"Updated matches from {jobs_analyzed} database jobs.")
+                    st.success(f"Updated matches from {jobs_analyzed} available jobs.")
 
         if False:
-            st.caption("Fetch roles from public company boards. New roles are saved for future matching.")
+            st.caption("Optionally refresh roles from public company boards.")
             job_source = st.radio(
                 "Company board",
                 [JOB_SOURCE_GREENHOUSE, JOB_SOURCE_LEVER, JOB_SOURCE_ASHBY],
@@ -3567,7 +3748,7 @@ with tab_main:
                         st.session_state["jobs_db"] = stored_jobs or jobs
                         st.success(f"Fetched and saved {len(jobs)} roles from {board.title()}.")
                     else:
-                        st.warning("No roles returned for that company board.")
+                        st.warning("No fresh roles returned from that board right now.")
 
     with jobs_col:
         render_top_career_links_section(backend_online, compact=True)
@@ -3579,7 +3760,7 @@ with tab_main:
         if recommendations:
             jobs_analyzed = st.session_state.get("last_jobs_analyzed", len(st.session_state.get("jobs_db", [])))
             st.markdown('<p class="section-header">Recommended Roles</p>', unsafe_allow_html=True)
-            st.caption(f"Ranked against {jobs_analyzed} roles from your database.")
+            st.caption(f"Ranked against {jobs_analyzed} available roles.")
             avg_score = int(sum(r.get("match_score", 0) for r in recommendations) / max(len(recommendations), 1))
             high_fit_count = sum(1 for r in recommendations if r.get("match_score", 0) >= 70)
             metric_1, metric_2, metric_3 = st.columns(3)
@@ -3607,12 +3788,12 @@ with tab_main:
 
             with st.expander("Parsed resume profile", expanded=False):
                 display_parsed_resume(parsed_data)
-        elif parsed_data:
+        elif False and parsed_data:
             st.markdown('<p class="section-header">Parsed Resume Profile</p>', unsafe_allow_html=True)
             display_parsed_resume(parsed_data)
-            st.info("No role matches yet. Re-run matching to auto-fetch roles, or add a specific company from Quick Tools.")
+            st.info("No role matches are displayed yet. Click Analyze to rank available roles automatically.")
         else:
-            st.info("Paste a resume or upload a PDF to generate ranked roles from the database.")
+            st.info("Upload a PDF resume to generate ranked roles automatically.")
 
         mode_label = "ML Classifier" if use_ml else "Heuristic"
 
@@ -3631,7 +3812,7 @@ with tab_main:
                 if recommendations:
                     jobs_analyzed = st.session_state.get("last_jobs_analyzed", len(st.session_state.get("jobs_db", [])))
                     st.markdown('<p class="section-header">Recommended Roles</p>', unsafe_allow_html=True)
-                    st.caption(f"Ranked against {jobs_analyzed} roles from your database.")
+                    st.caption(f"Ranked against {jobs_analyzed} available roles.")
                     avg_score = int(sum(r.get("match_score", 0) for r in recommendations) / max(len(recommendations), 1))
                     high_fit_count = sum(1 for r in recommendations if r.get("match_score", 0) >= 70)
                     metric_1, metric_2, metric_3 = st.columns(3)
@@ -3686,11 +3867,11 @@ with tab_main:
                 for idx, rec in enumerate(filtered):
                     display_job_card(rec, card_key=f"rec_{idx}", backend_online=backend_online)
 
-        elif parsed_data:
+        elif False and parsed_data:
             st.markdown('<p class="section-header">👤 Parsed Resume Profile</p>', unsafe_allow_html=True)
             display_parsed_resume(parsed_data)
-            st.info("Load jobs and click **⚡ Find Matching Jobs** to see recommendations.")
-        else:
+            st.info("Click Analyze to rank available roles automatically.")
+        elif False:
             st.info("Upload or paste a resume to generate role recommendations.")
 
     # ── Official Big Tech Search Links ────────────────────────────────────
@@ -3827,7 +4008,7 @@ if False:
                 if missing_skills:
                     st.write(", ".join(missing_skills))
                 else:
-                    st.caption("No skill gaps calculated yet. Run job matching to detect gaps.")
+                    st.caption("No skill gaps calculated yet. Click Analyze to detect gaps.")
 
         # Clear chat history button
         if st.button("🗑️ Clear Chat History"):

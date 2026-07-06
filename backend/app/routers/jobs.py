@@ -7,6 +7,7 @@ from app.services.job_sources import fetch_jobs
 from app.services.job_sources.official_search import generate_official_search_sources
 from app.services.storage import (
     delete_saved_job,
+    load_sample_jobs,
     list_jobs,
     list_saved_jobs,
     save_bookmarked_job,
@@ -196,6 +197,20 @@ def seed_jobs_endpoint(
                 )
 
     jobs = list_jobs(db, limit=1000)
+    if not jobs:
+        sample_jobs = load_sample_jobs()
+        saved_jobs = save_jobs_batch(db, sample_jobs) if sample_jobs else []
+        if sample_jobs:
+            source_results.append(
+                {
+                    "source": "sample",
+                    "company": "bundled-dataset",
+                    "fetched": len(sample_jobs),
+                    "saved": len(saved_jobs),
+                }
+            )
+        jobs = list_jobs(db, limit=1000)
+
     return {
         "jobs": jobs,
         "count": len(jobs),

@@ -30,6 +30,10 @@ services:
           property: connectionString
       - key: PYTHON_VERSION
         value: "3.10.14"
+      - key: ENABLE_SENTENCE_TRANSFORMERS
+        value: "false"
+      - key: ENABLE_GEMINI_CHAT
+        value: "false"
 
     healthCheckPath: /health
 

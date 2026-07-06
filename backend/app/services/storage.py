@@ -4,11 +4,18 @@ Database persistence helpers for resumes, jobs, and recommendations.
 
 from __future__ import annotations
 
+import json
+import os
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
 from app.models import Job, Recommendation, Resume, SavedJob
+
+_DATA_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", "data")
+)
+_SAMPLE_JOBS_PATH = os.path.join(_DATA_DIR, "sample_jobs.json")
 
 
 def _job_to_dict(record: Job) -> Dict[str, Any]:
@@ -99,6 +106,52 @@ def list_jobs(db: Session, limit: int = 500) -> List[Dict[str, Any]]:
         .all()
     )
     return [_job_to_dict(row) for row in rows]
+
+
+def load_sample_jobs() -> List[Dict[str, Any]]:
+    """Load the bundled job dataset used as the automatic fallback inventory."""
+    if not os.path.exists(_SAMPLE_JOBS_PATH):
+        return []
+
+    with open(_SAMPLE_JOBS_PATH, encoding="utf-8") as handle:
+        jobs = json.load(handle)
+
+    normalized_jobs: List[Dict[str, Any]] = []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        normalized_jobs.append(
+            {
+                "source": job.get("source", "Sample Dataset"),
+                "company": job.get("company", "Sample Company"),
+                "title": job.get("title", "Untitled Role"),
+                "location": job.get("location", ""),
+                "description": job.get("description", ""),
+                "requirements": job.get("requirements", ""),
+                "apply_url": job.get("apply_url", ""),
+                "job_type": job.get("job_type", "Unknown"),
+            }
+        )
+    return normalized_jobs
+
+
+def ensure_job_inventory(db: Session, limit: int = 500) -> List[Dict[str, Any]]:
+    """
+    Return stored jobs, seeding the bundled dataset when the database is empty.
+
+    This keeps Analyze automatic and fast when live job-board APIs are sleeping,
+    rate-limited, or unavailable.
+    """
+    jobs = list_jobs(db, limit=limit)
+    if jobs:
+        return jobs
+
+    sample_jobs = load_sample_jobs()
+    if sample_jobs:
+        save_jobs_batch(db, sample_jobs)
+        return list_jobs(db, limit=limit)
+
+    return []
 
 
 def get_or_create_resume(
