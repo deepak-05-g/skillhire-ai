@@ -125,6 +125,12 @@ st.markdown(
 
     /* ── Layout ─────────────────────────────────────────────────────────── */
     #MainMenu { visibility: hidden; }
+    [data-testid="stHeader"],
+    [data-testid="stToolbar"],
+    [data-testid="stDecoration"] {
+        display: none;
+        height: 0;
+    }
     footer     { visibility: hidden; }
 
     /* Clean off-white page background */
@@ -435,7 +441,7 @@ st.markdown(
         background: var(--page);
     }
     .block-container {
-        padding-top: 1.4rem;
+        padding-top: 0.35rem;
         padding-bottom: 3rem;
         max-width: 1440px;
     }
